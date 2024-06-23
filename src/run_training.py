@@ -10,7 +10,7 @@ from data.data import TorchVisionDM
 from trainer import ActiveTrainingLoop
 from utils import config_utils
 from utils.log_utils import setup_logger
-
+from collections import Counter
 
 @hydra.main(config_path="./config", config_name="config", version_base="1.1")
 def main(cfg: DictConfig):
@@ -84,17 +84,30 @@ def label_active_dm(
         datamodule (BaseDataModule): Datamodule with active train_set
         balanced_per_cls (int, optional): #samples drawn balanced per class for specific cases. Defaults to 5.
     """
+
+    print("#" * 20)
+    print(f"Config from main: {cfg}")
+    print(f"Number of labeled: {num_labelled}")
+    print(f"Balanced: {balanced}")
+    print(f"Balanced Per Class: {balanced_per_cls}")
+
+
     cfg.data.num_classes = cfg.data.num_classes
     if cfg.data.name in ["isic2019", "miotcd", "isic2016"] and balanced:
-        label_balance = cfg.data.num_classes * balanced_per_cls
+        print("Inside cfg.data.name in [isic2019, miotcd, isic2016] and balanced")
+        # label_balance = cfg.data.num_classes * balanced_per_cls
+        label_balance = num_labelled
         datamodule.train_set.label_balanced(
             n_per_class=label_balance // cfg.data.num_classes,
             num_classes=cfg.data.num_classes,
         )
-        label_random = num_labelled - label_balance
+        # label_random = num_labelled - label_balance
+        label_random = int(num_labelled - ((label_balance // cfg.data.num_classes) * cfg.data.num_classes))
         if label_random > 0:
             datamodule.train_set.label_randomly(label_random)
+
     elif datamodule.imbalance and balanced:
+        print("Inside datamodule.imbalance and balanced")
         label_balance = cfg.data.num_classes * balanced_per_cls
         datamodule.train_set.label_balanced(
             n_per_class=label_balance // cfg.data.num_classes,
@@ -104,12 +117,15 @@ def label_active_dm(
         if label_random > 0:
             datamodule.train_set.label_randomly(label_random)
     elif balanced:
+        print("Inside Balanced")
         datamodule.train_set.label_balanced(
             n_per_class=num_labelled // cfg.data.num_classes,
             num_classes=cfg.data.num_classes,
         )
     else:
+        print("Inside Else")
         datamodule.train_set.label_randomly(num_labelled)
+    print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&& ", Counter(datamodule.train_set.labelled_set.targets))
 
 
 @logger.catch
@@ -125,6 +141,7 @@ def train(cfg: DictConfig):
 
     datamodule = get_torchvision_dm(cfg, active_dataset)
     if cfg.active.num_labelled:
+        print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Run Standard Training from the selected labeled samples to use: ", cfg)
         label_active_dm(cfg, cfg.active.num_labelled, cfg.active.balanced, datamodule)
 
     training_loop = ActiveTrainingLoop(

@@ -15,7 +15,7 @@ from run_training import get_torchvision_dm, label_active_dm
 from trainer import ActiveTrainingLoop
 from utils import config_utils
 from utils.log_utils import setup_logger
-
+from collections import Counter
 
 @hydra.main(config_path="./config", config_name="config", version_base="1.1")
 def main(cfg: DictConfig):
@@ -63,29 +63,48 @@ def active_loop(
     datamodule = get_active_dm_from_config(cfg)
     label_active_dm(cfg, num_labelled, balanced, datamodule)
 
+    print("!!!!!!!!!!!!!!!!!!!!!!!!! Here is the train_set: ", len(datamodule.train_set))
+
     if num_iter == 0:
         num_iter = math.ceil(len(datamodule.train_set) / acq_size)
 
     active_stores = []
     metric_paths = []
+    
     for i in range(num_iter):
-        logger.info("Start Active Loop {}".format(i))
+        # logger.info("Start Active Loop {}".format(i))
         # Perform active learning iteration with training and labeling
+        training_loop = ActiveTrainingLoop(
+            cfg, count=i, datamodule=datamodule, base_dir=os.getcwd()
+        )
+        # logger.info("Start Training of Loop {}".format(i))
+        # training_loop.main()
+        # if training_loop.trainer.interrupted:
+        #     return
+        logger.info("Start Acquisition of Loop {}".format(i))
+        active_store = training_loop.active_callback()
+
+        print("Count How many more are already labeled: ", active_store.n_labelled)
+        print(Counter(active_store.labels))
+        print("Count How many more are requested: ", len(active_store.requests))
+        
+        print("Requested: ", active_store.requests)
+        # print("Here are requested: ", active_store.requests)
+
+        datamodule.train_set.label(active_store.requests)
+        active_stores.append(active_store)
+        # training_loop.log_save_dict()
+        cfg.active.num_labelled += cfg.active.acq_size
+        logger.info("Finalized Loop {}".format(i))
+        metric_paths.append(training_loop.log_dir)
+
+        # Add the training after selecting the samples
         training_loop = ActiveTrainingLoop(
             cfg, count=i, datamodule=datamodule, base_dir=os.getcwd()
         )
         logger.info("Start Training of Loop {}".format(i))
         training_loop.main()
-        if training_loop.trainer.interrupted:
-            return
-        logger.info("Start Acquisition of Loop {}".format(i))
-        active_store = training_loop.active_callback()
-        datamodule.train_set.label(active_store.requests)
-        active_stores.append(active_store)
-        training_loop.log_save_dict()
-        cfg.active.num_labelled += cfg.active.acq_size
-        logger.info("Finalized Loop {}".format(i))
-        metric_paths.append(training_loop.log_dir)
+
         del training_loop
         time.sleep(1)
 

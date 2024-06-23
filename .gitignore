@@ -18,6 +18,12 @@ lightning_logs/
 # experimenting
 src/playground*
 
+# Datasets
+datasets/
+
+# Training Results
+experiments/
+
 # MAC OS
 .DS_Store
 

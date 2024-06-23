@@ -18,7 +18,7 @@ class BayesianModule(AbstractClassifier):
         Args:
             config (DictConfig): all hparams.
         """
-        super().__init__(eman=True)
+        super().__init__(eman=True, num_classes=config.data.num_classes)
         self.save_hyperparameters(config)
         self.model = build_model(
             config, num_classes=config.data.num_classes, data_shape=config.data.shape

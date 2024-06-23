@@ -213,7 +213,7 @@ def acq_from_batch(
     Returns:
         np.ndarray: outputs of function for batch inputs.
     """
-    x, y = batch
+    x, y, index = batch
     x = x.to(device)
     out = function(x)
     out = to_numpy(out)

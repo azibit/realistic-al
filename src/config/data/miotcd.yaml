@@ -1,6 +1,6 @@
 name: miotcd
-shape: [224, 224, 3]
-num_classes: 11
+shape: [32, 32, 3]
+num_classes: 7
 val_split: 0.2
 mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]

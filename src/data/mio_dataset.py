@@ -16,6 +16,7 @@ class MIOTCDDataset(Dataset):
         train: bool = True,
         transform: Callable[[Image.Image], Image.Image] = None,
         download: bool = True,
+        val: bool = False,
         preprocess: bool = True,
     ):
         """Dataset for MIO-TCD Dataset.
@@ -39,15 +40,15 @@ class MIOTCDDataset(Dataset):
 
         self.root = Path(root)
         self.root = self.root / self.folder_name
-        if download:
-            self.download()
+
         self.transform = transform
+        self.val = val
 
         self.csv = {
-            "train": self.root / "custom_Training_Data.csv",
-            "test": self.root / "custom_Test_Data.csv",
+            "train": self.root / "train_data.csv",
+            "test": self.root / "test_data.csv",
+            "val": self.root / "val_data.csv",
         }
-        self.train_test_split()
         self.data, self.targets = self.get_data()
 
     def __getitem__(self, index):
@@ -65,13 +66,18 @@ class MIOTCDDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        return img, target
-
+        return img, target, index
+    
     def get_data(self):
         if self.train:
-            csv = self.csv["train"]
+            return self.get_data_by_label('train')
+        elif self.val:
+            return self.get_data_by_label('val')
         else:
-            csv = self.csv["test"]
+            return self.get_data_by_label('test')
+
+    def get_data_by_label(self, label):
+        csv = self.csv[label]
         csv = pd.read_csv(csv)
         self.names = list(csv.iloc[:, 1:].columns)
 
@@ -81,39 +87,6 @@ class MIOTCDDataset(Dataset):
         targets = csv["target"].to_numpy()
 
         return data, targets
-
-    def train_test_split(self):
-        csv_train_path = self.csv["train"]
-        csv_test_path = self.csv["test"]
-
-        if not (csv_train_path.exists() and csv_test_path.exists()):
-            data = {
-                "path": [],
-                "target": [],
-            }
-            class_folders = [*(self.root / "train").iterdir()]
-            class_folders.sort()
-
-            for i, class_folder in enumerate(class_folders):
-                path_class = [*class_folder.iterdir()]
-                for j, path in enumerate(path_class):
-                    path_class[j] = os.path.join(
-                        path.parent.parent.name, path.parent.name, path.name
-                    )
-                data["path"].extend(path_class)
-                data["target"].extend([i] * len(path_class))
-
-            df = pd.DataFrame(data)
-            full_size = len(df)
-            test_size = int(0.25 * full_size)
-            rng = np.random.default_rng(12345)
-            test_indices = rng.choice(full_size, size=test_size, replace=False)
-            test_mask = np.zeros(full_size, dtype=bool)
-            test_mask[test_indices] = 1
-            csv_test = df.iloc[test_mask]
-            csv_train = df.iloc[~test_mask]
-            csv_train.to_csv(csv_train_path, index=False)
-            csv_test.to_csv(csv_test_path, index=False)
 
     def __len__(self):
         return len(self.data)
@@ -146,23 +119,3 @@ class MIOTCDDataset(Dataset):
                 img.save(preprocessed_path)
             preprocessed_data.append(preprocessed_path)
         self.data = preprocessed_data
-
-    def download(self):
-        from utils.download_url import download_url
-
-        for mode in self.data_url:
-            if not os.path.exists(os.path.join(self.root, "README.txt")):
-                print(
-                    "Downloading and extracting {} Dataset...".format(self.folder_name)
-                )
-                save_path = os.path.join(self.root, self.data_name[mode] + ".zip")
-                os.makedirs(os.path.join(self.root), exist_ok=True)
-
-                download_url(self.data_url[mode], save_path)
-
-                zip_ref = tarfile.open(save_path, "r")
-                zip_ref.extractall(self.root)
-                zip_ref.close()
-
-                os.remove(save_path)
-                print("Finished donwload and extraction")

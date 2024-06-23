@@ -109,22 +109,23 @@ class ImbClassMetricCallback(MetricCallback):
         super().__init__()
         modes = ["train", "val", "test"]
         self.pred_dict = {}
+        self.task = 'binary' if num_classes == 2 else 'multiclass'
         self.pred_conf = {
-            mode: ConfusionMatrix(num_classes=num_classes, normalize=None)
+            mode: ConfusionMatrix(num_classes=num_classes, normalize=None, task = self.task)
             for mode in modes
         }
 
         self.auc_dict = {}
         self.auc_dict.update(
             {
-                f"{mode}/auroc": AUROC(num_classes=num_classes, mode="macro")
+                f"{mode}/auroc": AUROC(num_classes=num_classes, task = self.task)
                 for mode in modes
             }
         )
         self.auc_dict.update(
             {
                 f"{mode}/av_prec": AveragePrecision(
-                    num_classes=num_classes, mode="macro"
+                    num_classes=num_classes, task = self.task
                 )
                 for mode in modes
             }

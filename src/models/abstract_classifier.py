@@ -19,7 +19,7 @@ from .utils import exclude_from_wt_decay, freeze_layers, load_from_ssl_checkpoin
 
 
 class AbstractClassifier(pl.LightningModule):
-    def __init__(self, eman: bool = True):
+    def __init__(self, eman: bool = True, num_classes = 2):
         """Abstract Classifier carrying the logic for Bayesian Models with MC Dropout and logging for base values.
         Dropout is per default used always, also during validation due to make use of its Bayesian properties.
 
@@ -33,10 +33,15 @@ class AbstractClassifier(pl.LightningModule):
 
         self.ema_model = None
         self.eman = eman
+        self.num_classes = num_classes
 
-        self.acc_train = Accuracy()
-        self.acc_val = Accuracy()
-        self.acc_test = Accuracy()
+        task_for_accuracy = "binary"
+        if self.num_classes > 2:
+            task_for_accuracy = "multiclass"
+
+        self.acc_train = Accuracy(task = task_for_accuracy, num_classes = self.num_classes)
+        self.acc_val = Accuracy(task = task_for_accuracy, num_classes = self.num_classes)
+        self.acc_test = Accuracy(task = task_for_accuracy, num_classes = self.num_classes)
 
         self.loss_fct = nn.NLLLoss()
 
@@ -144,7 +149,7 @@ class AbstractClassifier(pl.LightningModule):
         Returns:
             Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor]: loss, logprob, predictions, labels
         """
-        x, y = batch
+        x, y, index = batch
         logprob = self.forward(x, k=k)
         loss = self.loss_fct(logprob, y)
         preds = torch.argmax(logprob, dim=1)

@@ -1,17 +1,30 @@
 from typing import Tuple
 
 import numpy as np
-import torch
+import torch, sys
 import torch.nn.functional as F
 from omegaconf import DictConfig
 from scipy import stats
 from torch.utils.data import DataLoader
 
+import vision_transformer as vits
+import torchextractor as tx
+from kmeans_pytorch import kmeans
+import utils
+import pickle
+import random
+
 from models.bayesian_module import BayesianModule
 
 from .kcenterGreedy import KCenterGreedy
+from functools import partial
 
-NAMES = ["kcentergreedy", "badge"]
+class DictToObject:
+    def __init__(self, dictionary):
+        for key, value in dictionary.items():
+            setattr(self, key, value)
+
+NAMES = ["kcentergreedy", "badge", "freesel"]
 
 DEVICE = "cuda:0"
 
@@ -50,6 +63,10 @@ def query_sampler(
             model, labeled_dataloader, unlabeled_dataloader, acq_size=acq_size
         )
         # there is no ranking, therefore we add descending numerics as ranking values
+        return indices, np.arange(acq_size)[::-1]
+    
+    elif name == "freesel":
+        indices = _get_freesel(model, labeled_dataloader, unlabeled_dataloader, acq_size=acq_size)
         return indices, np.arange(acq_size)[::-1]
     else:
         raise NotImplementedError
@@ -158,7 +175,7 @@ def get_grad_embedding(
     start_index = 0
     assert hasattr(model, "model")  # model requires sub class model (due to code)
     assert hasattr(
-        model.model, "classifer"
+        model.model, "classifier"
     )  # model.model requires classification head (due to code).
     for i, (x, y) in enumerate(dataloader):
         inputs = x.to(device)
@@ -246,3 +263,171 @@ def _get_kcg(
         # subtract the indices of the labeled data to get pool indices
         acq_indices -= indices_labeled.shape[0]
     return acq_indices
+
+def filter_features(dense_features, args, attn=None):
+    # input: (n, c, k, k)
+    # output: list n: [c1, c2, ...,]
+    filtered_features = []
+    count = 0
+
+    bs = dense_features.shape[0]
+    if "vit" not in args.arch:
+        dense_features = dense_features.permute(0, 2, 3, 1)
+        dense_features = dense_features.reshape(bs, dense_features.shape[1]*dense_features.shape[2], dense_features.shape[3])  # (n, k*k,c )
+
+    dense_features_norm = torch.norm(dense_features, p=2, dim=2)  # (n, k*k)
+
+    if attn is None:
+        mask = dense_features_norm > args.threshold # (n, k*k)
+    else:
+        assert 0 <= args.threshold <= 1
+        # attn: (bs, wh)
+        attn_sort, idx_sort = torch.sort(attn, dim=1, descending=False)
+        attn_cum = torch.cumsum(attn_sort, dim=1)  # (bs, wh)
+        mask = attn_cum > (1-args.threshold)
+        for b in range(bs):
+            mask[b][idx_sort[b]] = mask[b].clone()
+
+    for b in range(bs):
+        mask_i = mask[b]  # (k*k, )
+        dense_features_i = dense_features[b]  # (k*k, c)
+        if torch.sum(mask_i) > 0:
+            dense_features_i = dense_features_i[mask_i]
+        else:
+            max_id = torch.max(dense_features_norm[b], dim=0)[1]
+            dense_features_i = dense_features_i[max_id].unsqueeze(0)  # (1, c)
+
+        if args.centroid_num is not None and args.centroid_num < dense_features_i.shape[0]:
+            if args.centroid_num > 1:
+                cluster_ids_x, cluster_centers = kmeans(
+                    X=dense_features_i, num_clusters=args.sample_num, distance=args.kmeans_dist_type, iter_limit=100, device=torch.device('cuda:0')
+                )
+            else:
+                if args.kmeans_dist_type == "cosine":
+                    dense_features_i_ = F.normalize(dense_features_i, p=2, dim=1)
+                else:
+                    dense_features_i_ = dense_features_i
+                cluster_centers = torch.mean(dense_features_i_, dim=0, keepdims=True)
+            count += cluster_centers.shape[0]
+            filtered_features.append(cluster_centers.cuda())
+        else:
+            filtered_features.append(dense_features_i)
+            count += dense_features_i.shape[0]
+
+    return filtered_features, count
+
+@torch.no_grad()
+def extract_features(model, data_loader, args):
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    if "vit" not in args.arch:
+        model = tx.Extractor(model, ["layer4"])
+
+    train_ids = []
+    train_features = []
+    feature_num = 0
+
+    for samples, targets, index in metric_logger.log_every(data_loader, 1):
+        samples = samples.cuda(non_blocking=True)
+        if "vit" not in args.arch:
+            feats, dense_feats = model(samples)
+            dense_feats = dense_feats["layer4"].clone()
+            dense_feats, count = filter_features(dense_feats, args)
+        else:
+            dense_feats = model.get_intermediate_layers(samples, n=2)
+            dense_feats = dense_feats[0]
+            dense_feats = dense_feats[:, 1:]
+            attn = model.get_last_selfattention(samples)  # (bs, nh, wh+1, wh+1)
+            attn = torch.mean(attn, dim=1)[:, 0, 1:]  # (bs, wh)
+            attn = attn / torch.sum(attn, dim=1, keepdim=True)
+            dense_feats, count = filter_features(dense_feats, args, attn)
+
+        feature_num += count
+
+        train_features.extend(dense_feats)
+        train_ids.extend(index)
+
+    return train_features, train_ids
+
+def merge_features(all_features):
+    merged_features = list(all_features.values())
+    merged_features = torch.cat(merged_features, dim=0)
+    id2idx = {}
+    idx = 0
+    count = 0
+    merged_ids = []
+    for id in all_features:
+        id2idx[count] = torch.arange(idx, idx+all_features[id].shape[0])
+        merged_ids.append(id)
+        idx = idx + all_features[id].shape[0]
+        count += 1
+    return merged_features, merged_ids, id2idx
+
+def _get_freesel(
+    model: torch.nn.Module,
+    labeled_dataloader: DataLoader,
+    pool_loader: DataLoader,
+    acq_size: int = 100,
+):
+    print("We have come to freesel")
+    print("Model: ", model)
+    print("Labeled Dataloader: ", len(labeled_dataloader))
+    print("Unlabeled Dataloader: ", len(pool_loader))
+    print("Acquisition Size: ", acq_size)
+
+    PARAMS = {
+        "arch": "vit_small",
+        "patch_size": 16,
+        'threshold': 0.5,
+        "centroid_num": 1,
+        "kmeans_dist_type": "euclidean",
+        "sample_num": 5,
+        "random_num": None,
+        "sampling": "prob",
+        "selected_num": acq_size,
+        "dist_type": "cosine",
+        "pretrained_weights": '',
+        'checkpoint_key': 'teacher'
+
+    }
+
+    PARAMS = DictToObject(PARAMS)
+
+    #1. Load in a different model.
+    model = vits.__dict__[PARAMS.arch](patch_size=PARAMS.patch_size, num_classes=0)
+    model.cuda()
+    utils.load_pretrained_weights(model, PARAMS.pretrained_weights, PARAMS.checkpoint_key, PARAMS.arch, PARAMS.patch_size)
+    model.eval()
+
+    # ============ extract features ... ============
+    print("Extracting features for train set...")
+    train_features, train_ids = extract_features(model, pool_loader, PARAMS)
+
+    all_features = {}
+    for i in range(len(train_features)):
+        all_features[train_ids[i]] = train_features[i]
+
+    merged_features, merged_ids, id2idx = merge_features(all_features)
+
+    print("Select Samples...")
+
+    args = PARAMS
+
+    if args.random_num is None:
+        if args.sampling == "prob":
+            selected_sample = utils.prob_seed_dense(merged_features, id2idx, args.selected_num, partial(utils.get_distance, type=args.dist_type))
+        else:
+            selected_sample = utils.farthest_distance_sample_dense(merged_features, id2idx, args.selected_num, partial(utils.get_distance, type=args.dist_type))
+    else:
+        init_ids = random.sample(range(len(id2idx)), args.random_num)
+        if args.sampling == "prob":
+            selected_sample = utils.prob_seed_dense(merged_features, id2idx, args.selected_num, partial(utils.get_distance, type=args.dist_type), init_ids=init_ids)
+        else:
+            selected_sample = utils.farthest_distance_sample_dense(merged_features, id2idx, args.selected_num, partial(utils.get_distance, type=args.dist_type), init_ids=init_ids)
+
+    selected_ids = []
+    for idx in selected_sample:
+        id = merged_ids[idx]
+        selected_ids.append(int(id))
+    # selected_ids.sort()
+
+    return selected_ids

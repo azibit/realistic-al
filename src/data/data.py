@@ -109,25 +109,41 @@ class TorchVisionDM(BaseDataModule):
         except:  # Error is assumed here to stem from data not being present.
             # Download the TorchVision Dataset
             self.dataset_cls(root=self.data_root, download=True)
-        self.train_set = self.dataset_cls(
-            self.data_root, train=True, transform=self.train_transforms
-        )
-        self.train_set = self._split_dataset(self.train_set, train=True)
-
-        if self.imbalance:
-            self.train_set = create_imbalanced_dataset(
-                self.train_set, imb_type="exp", imb_factor=0.02
+        
+        if self.dataset == "miotcd":
+            print("We came here &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&& ")
+            self.val_set = self.dataset_cls(
+            self.data_root, train=False, val=True, transform=self.test_transforms
             )
 
+            self.train_set = self.dataset_cls(
+            self.data_root, train=True, transform=self.train_transforms
+            )
+        else:
+
+            self.train_set = self.dataset_cls(
+            self.data_root, train=True, transform=self.train_transforms
+            )
+            self.train_set = self._split_dataset(self.train_set, train=True)
+
+            if self.imbalance:
+                self.train_set = create_imbalanced_dataset(
+                    self.train_set, imb_type="exp", imb_factor=0.02
+                )
+
+            self.val_set = self.dataset_cls(
+            self.data_root, train=True, transform=self.test_transforms
+            )
+            self.val_set = self._split_dataset(self.val_set, train=False)
+        
+        print("Length of training set before checking for active: ", len(self.train_set))
         if self.active:
+            print("Checking if we are active or not ************************************************************* ")
             self.train_set = ActiveLearningDataset(
                 self.train_set, pool_specifics={"transform": self.test_transforms}
             )
+        print("Length of training set after checking for active: ", len(self.train_set))
 
-        self.val_set = self.dataset_cls(
-            self.data_root, train=True, transform=self.test_transforms
-        )
-        self.val_set = self._split_dataset(self.val_set, train=False)
         self.test_set = self.dataset_cls(
             self.data_root, train=False, transform=self.test_transforms
         )

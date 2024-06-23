@@ -1,4 +1,3 @@
-import os
 from typing import Iterable, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -190,7 +189,7 @@ def evaluate_accuracy(model: torch.nn.Module, dataloader: DataLoader, device="cu
     correct = 0
     for batch in dataloader:
         with torch.no_grad():
-            x, y = batch
+            x, y, index = batch
             x = x.to(device)
             out = model(x)
             pred = torch.argmax(out, dim=1)
